@@ -237,6 +237,9 @@ int main(int argc, char* argv[])
 
 	printf("Message queue set up\n");
 
+	msgbuffer buf;
+	msgbuffer rcvbuf;
+
 	// **GET RID OF THIS**
 	logfile = fopen("ossLog.txt", "w");
 	if(logfile == NULL)
@@ -525,6 +528,94 @@ int main(int argc, char* argv[])
 			}
 		}
 
+		if (msgrcv(msqid, &rcvbuf, sizeof(msgbuffer) - sizeof(long), 1, IPC_NOWAIT) == -1)
+		{
+			if (errno == ENOMSG)
+			{
+
+			}
+			else 
+			{
+				perror("msgrcv");
+				exit(1);
+			}
+		}
+		else
+		{
+			int indx = -1;
+			for (int i = 0; i < 18; i++)
+			{
+				if (processTable[i].occupied == 1 && processTable[i].pid == rcvbuf.pid)
+				{
+					indx = i;
+					break;
+				}
+			}
+			
+			if (indx >= 0)
+			{
+				int r = rcvbuf.resId;
+				if (!rcvbuf.isRelease)
+				{
+					if (resTable[r].available > 0)
+					{
+						resTable[r].available--;
+						resTable[r].allocation[indx]++;
+						processTable[indx].held[r]++;
+
+						buf.mtype = rcvbuf.pid;
+						buf.granted = true;
+						if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+						{
+							perror("msgsnd grant");
+							exit(1);
+						}
+					}
+					
+					else 
+					{
+						resTable[r].request[indx]++;
+						resTable[r].waitQueue.push(indx);
+					}
+				}
+				else
+				{
+					resTable[r].allocation[indx]--;
+					processTable[indx].held[r]--;
+					resTable[r].available++;
+
+					buf.mtype = rcvbuf.pid;
+					buf.granted = true;
+					if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+					{
+						perror("msgsnd release");
+						exit(1);
+					}
+
+					if (!resTable[r].waitQueue.empty())
+					{
+						int n = resTable[r].waitQueue.front();
+						resTable[r].waitQueue.pop();
+						resTable[r].available--;
+						resTable[r].allocation[n]++;
+						processTable[n].held[r]++;
+						resTable[r].request[n]--;
+
+						buf.mtype = processTable[n].pid;
+						buf.granted = true;
+						if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+						{
+							perror("msgsnd wakeup");
+							exit(1);
+						}
+					}
+				}
+
+			}
+		}
+
+
+		printInfo(18);
 	}
 
 	
