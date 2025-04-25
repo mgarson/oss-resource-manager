@@ -63,6 +63,15 @@ void shareMem()
 	}
 }
 
+void addTime()
+{
+	shm_ptr[1] += 1000;
+	if (shm_ptr[1] > 1000000000)
+	{
+		shm_ptr[1] -= 1000000000;
+		shm_ptr[0]++;
+	}
+}
 
 int main(int argc, char* argv[])
 {
@@ -109,16 +118,83 @@ int main(int argc, char* argv[])
 			{
 				for (int i = 0; i < MAX_RES; i++)
 				{
+					while (held[i]-- > 0)
+					{
+						buf.mtype = 1;
+						buf.resId = i;
+						buf.isRelease = true;
 
+						if (msgsnd(msqid, &buf, sizeof(buf) - sizeof(long), 0) == -1)
+						{
+							perror("msgsnd release");
+							exit(1);
+						}
+						//addOverhead()
+						
+						if (msgrcv(msqid, &rcvbuf, sizeof(rcvbuf) - sizeof(long), getpid(), 0) == -1)
+						{
+							perror("msgrcv release ack");
+							exit(1);
+						}
+						//addOverhead
+						
+					}
+				}
+				break;
+			}
+		}
+
+		if (currTimeNs >= nextAction)
+		{
+			int outcome = rand() % 100;
+			bool release;
+			if (outcome > 30)
+				release = true;
+			else
+				release = false;
+
+			int r;
+			if (release)
+			{
+				int tries = 0;
+				while (tries < MAX_RES)
+				{
+					r = rand() % MAX_RES;
+					if (held[r] > 0)
+						break;
+					tries++;
+				}
+				// Double check this should be done
+				if (tries == MAX_RES)
+				{
+					release = false;
+				}
+			}
+			if (!release)
+			{
+				int tries = 0;
+				while (tries < MAX_RES)
+				{
+					r = rand() % MAX_RES;
+					if (held[r] > 0)
+						break;
+					tries++;
+				}
+				if (tries == MAX_RES)
+				{
+					nAct = currTimeNs + (rand() % BOUND_NS);
+					continue;
 				}
 			}
 		}
 
-
-
-
-
+		buf.mtype = 1;
+		buf.resId = r;
+		buf.isRelease = release;
 	}
+
+
+
 	
 	// Detach from memory
 	if (shmdt(shm_ptr) == -1)
