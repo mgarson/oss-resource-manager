@@ -37,7 +37,7 @@ typedef struct
 {
 	int proc;
 	int simul;
-	int interval;
+	long long interval;
 	string logfile;
 } options_t;
 
@@ -237,9 +237,6 @@ int main(int argc, char* argv[])
 
 	printf("Message queue set up\n");
 
-	msgbuffer buf;
-	msgbuffer rcvbuf;
-
 	// **GET RID OF THIS**
 	logfile = fopen("ossLog.txt", "w");
 	if(logfile == NULL)
@@ -376,8 +373,8 @@ int main(int argc, char* argv[])
 					}
 				}
 
-				// Set interval to optarg and break
-				options.interval = atoi(optarg);
+				// Set interval to optarg, converting to ns,  and break
+				options.interval = atoll(optarg) * 1000000;
 				break;
 
 			case 'f': // Print output also to logfile if option is passed
@@ -420,34 +417,16 @@ int main(int argc, char* argv[])
 	for (int i = 0; i < 18; i++)
 	{
 		processTable[i].occupied = 0;
-		processTable[i].serviceTimeSeconds = 0;
-		processTable[i].serviceTimeNano = 0;
-		processTable[i].eventWaitSec = 0;
-		processTable[i].eventWaitNano = 0;
-		processTable[i].blocked = 0;
 	}
 
-	// Max number of sec allowed between spawning processes
-	const int maxBetProcSec = 1;
-	// Max number of ns allowed between spawning processes
-	const int maxBetProcNs = 1000;
-	// Variable to hold current time in ns. Calculate using memory pointers representng system time.
-	long long currTimeNs = ((long long)shm_ptr[0] * 1000000000) + shm_ptr[1];
-	// Generate random number of sec and ns between 0 through max allowed
-	int randSec = rand() % (maxBetProcSec + 1);
-	int randNs = rand() % (maxBetProcNs + 1);
-	// Calculate total random delay in ns
-	long long randDelay = ((long long)randSec * 1000000000) + randNs;
-	// Calculate next spawn time in ns by adding random delay to current time
-	long long nSpawnT = currTimeNs + randDelay;
-
+	long long currTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
+	long long nSpawnT = currTimeNs + options.interval;
 	// Loop that will continue until amount of 100 total child processes is reached or until running processes is 0
 	// Ensures only 100 total  processes are able to run, and that no processses are still running when the loop ends
 	while (total < 100 ||  running > 0)
 	{
 		// Update system clock
 		incrementClock();
-		long long currTimeNs = ((long long)shm_ptr[0] * 1000000000) + shm_ptr[1];
 
 		// Calculate time since last print for sec and ns
 		long long int printDiffSec = shm_ptr[0] - lastPrintSec;
@@ -469,10 +448,7 @@ int main(int argc, char* argv[])
 			lastPrintNs = shm_ptr[1];
 		}
 
-
-		// Update variable holding clock time in ns to system's current time in ns
-		currTimeNs = ((long long)shm_ptr[0] * 1000000000) + shm_ptr[1];
-
+		currTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
 		// Determine if a new child process can be spawned
 		// Must be greater than next spawn time, less than total process allowed (100), and less than simultanous processes allowed (18)
 		if (currTimeNs >= nSpawnT && total < 100  && running < 18)
@@ -509,21 +485,11 @@ int main(int argc, char* argv[])
 						processTable[i].pid = childPid;
 						processTable[i].startSeconds = shm_ptr[0];
 						processTable[i].startNano = shm_ptr[1];
-						processTable[i].serviceTimeSeconds = 0;
-						processTable[i].serviceTimeNano = 0;
-						processTable[i].eventWaitSec = 0;
-						processTable[i].eventWaitNano = 0;
-						processTable[i].blocked = 0;
 						break;
 					}
 				}
-
-				// Calculate next randomly generated spawn time in ns
-				randSec = rand() % (maxBetProcSec);
-				randNs = rand() % (maxBetProcNs);
-				randDelay = (randSec * 1000000000) + randNs;
 				currTimeNs = (shm_ptr[0] * 1000000000) + shm_ptr[1];
-				nSpawnT = currTimeNs + randDelay;
+				nSpawnT = currTimeNs + options.interval;
 
 			}
 		}
@@ -545,7 +511,7 @@ int main(int argc, char* argv[])
 			int indx = -1;
 			for (int i = 0; i < 18; i++)
 			{
-				if (processTable[i].occupied == 1 && processTable[i].pid == rcvbuf.pid)
+				if (processTable[i].occupied == 1 && processTable[i].pid == rcvbuf.mtype)
 				{
 					indx = i;
 					break;
@@ -563,7 +529,7 @@ int main(int argc, char* argv[])
 						resTable[r].allocation[indx]++;
 						processTable[indx].held[r]++;
 
-						buf.mtype = rcvbuf.pid;
+						buf.mtype = rcvbuf.mtype;
 						buf.granted = true;
 						if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
 						{
@@ -584,7 +550,7 @@ int main(int argc, char* argv[])
 					processTable[indx].held[r]--;
 					resTable[r].available++;
 
-					buf.mtype = rcvbuf.pid;
+					buf.mtype = rcvbuf.mtype;
 					buf.granted = true;
 					if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
 					{

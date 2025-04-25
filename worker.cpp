@@ -19,11 +19,18 @@
 #include <cstdlib>
 
 #define PERMS 0644
+#define MAX_RES 5
+#define INST_PER_RES 10
+#define BOUND_NS 100000000
+#define TERM_CHECK_NS 250000000
+#define LIFE_NS 1000000000
+
 typedef struct msgbuffer
 {
 	long mtype;
-	char strData[100];
-	int intData;
+	int resId;
+	bool isRelease;
+	bool granted;
 } msgbuffer;
 
 int *shm_ptr;
@@ -63,6 +70,7 @@ int main(int argc, char* argv[])
 	
 	// Info needed for message sending/receiving
 	msgbuffer buf;
+	msgbuffer rcvbuf;
 	buf.mtype = 1;
 	int msqid = 0;
 	key_t key;
@@ -81,72 +89,35 @@ int main(int argc, char* argv[])
 		exit(1);
 	}
 
+	int held[MAX_RES] = {0};
+
+	long long startTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
+	long long lastTermCh = startTimeNs;
+
 	srand(getpid());
+	long long nAct = startTimeNs + (rand() % BOUND_NS);
 
 	// Loop that loop suntil determined end time is reached
 	while(true)
 	{
-		// Receive message from parent
-		if (msgrcv(msqid, &buf, sizeof(msgbuffer) - sizeof(long), getpid(), 0) == -1)
+		long long currTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
+
+		if (currTimeNs - lastTermChk >= TERM_CHECK_NS)
 		{
-			perror("msgrcv failed");
-			exit(1);
+			lastTermChk = currTimeNs;
+			if (currTimeNs - startTimeNs >= LIFE_NS)
+			{
+				for (int i = 0; i < MAX_RES; i++)
+				{
+
+				}
+			}
 		}
 
-		// Get time quantum given from parent in message. This is amount of time child runs
-		int quantum = buf.intData;
 
-		// Generate random number to determine child's outcome in this iteration
-		int outcome = rand() % 100;
-		// Bool to represent if child should terminate, set to false initially
-		bool termNow = false;
-		bool blockNow = false;
-		// Stores what child's time quantum will be based on outcome generated. Initally set to full quantum
-		int effQuantum = quantum;
 
-		// If less than 20, early termination
-		if (outcome < 20)
-		{
-			// If quantum is greater than 1, set effQuantum to random number less than full quantum
-			if (quantum > 1)
-				effQuantum = rand() % quantum;
-			// Else set effQuantum to the full quantum
-			else
-				effQuantum = quantum;
-			// Set to true, so process will temrinate after using effQuantum time
-			termNow = true;
-		}
-		// Else outcome between 20-49, simulate I/O interrupt. Process will not terminate after this iteration
-		else if (outcome < 50)
-		{
-			// If quantum is greater than 1, set effQuantum to random number less than full quantum
-			if (quantum > 1)
-				effQuantum = rand() % quantum;
-			// Else set effQuantum to full quantum
-			else effQuantum = quantum;
-			blockNow = true;
-		}
-		
 
-		// Get info to send message back to parent
-		buf.mtype = getpid();
-	 	buf.intData = effQuantum;	
-		if (termNow)
-			strcpy(buf.strData, "0");
-		else if (blockNow)
-			strcpy(buf.strData, "-1");
-		else
-			strcpy(buf.strData, "1");
 
-		// Send message back to parent that process is still running
-		if (msgsnd(msqid, &buf, sizeof(msgbuffer)-sizeof(long), 0) == -1)
-		{
-			perror("msgsnd to parent failed.\n");
-			exit(1);
-		}
-
-		if (termNow)
-			break;
 	}
 	
 	// Detach from memory
