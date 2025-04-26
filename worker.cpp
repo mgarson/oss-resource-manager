@@ -21,9 +21,9 @@
 #define PERMS 0644
 #define MAX_RES 5
 #define INST_PER_RES 10
-#define BOUND_NS 100000000
+#define BOUND_NS 100000
 #define TERM_CHECK_NS 250000000
-#define LIFE_NS 1000000000
+#define LIFE_NS 5000000000
 
 typedef struct msgbuffer
 {
@@ -116,6 +116,7 @@ int main(int argc, char* argv[])
 			lastTermChk = currTimeNs;
 			if (currTimeNs - startTimeNs >= LIFE_NS)
 			{
+				printf("Worker: terminating now\n");
 				for (int i = 0; i < MAX_RES; i++)
 				{
 					while (held[i]-- > 0)

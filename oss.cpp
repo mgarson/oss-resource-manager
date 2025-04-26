@@ -408,6 +408,11 @@ int main(int argc, char* argv[])
 	{
 		resTable[i].total = 10;
 		resTable[i].available = 10;
+		for (int j = 0; j < 18; j++)
+		{
+			resTable[i].allocation[j] = 0;
+			resTable[i].request[j] = 0;
+		}
 	}
 	// Variables to track last printed time
 	long long int lastPrintSec = shm_ptr[0];
@@ -417,6 +422,11 @@ int main(int argc, char* argv[])
 	for (int i = 0; i < 18; i++)
 	{
 		processTable[i].occupied = 0;
+		processTable[i].waitingOn = -1; // Double check this, rn -1 means not blocked on any resource
+		for (int j = 0; j < 5; j++) // NEED TO ADD DEFINE FOR MAX RES
+		{
+			processTable[i].held[j] = 0;
+		}
 	}
 
 	long long currTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
@@ -447,15 +457,27 @@ int main(int argc, char* argv[])
 
 			for (int i = 0; i < 5; i++)
 			{
-				int hCount = processTable[indx].held[r];
+				int hCount = processTable[indx].held[i];
 				if (hCount > 0)
 				{
-					resTable[r].available += hCount;
-					resTable[r].allocation[indx] = 0;
-					processTable[indx].held[r] = 0;
+					resTable[i].available += hCount;
+					resTable[i].allocation[indx] = 0;
+					processTable[indx].held[i] = 0;
 				}
-				resTable[r].request[indx] = 0;
+				resTable[i].request[indx] = 0;
+
+				queue<int> temp;
+				while(!resTable[i].waitQueue.empty())
+				{
+					int qIndx = resTable[i].waitQueue.front();
+					resTable[i].waitQueue.pop();
+					if (qIndx != indx)
+						temp.push(qIndx);
+				}
+				resTable[i].waitQueue = temp;
 			}
+			processTable[indx].occupied = 0;
+			running--;
 		}
 
 		// Calculate time since last print for sec and ns
@@ -528,7 +550,7 @@ int main(int argc, char* argv[])
 		{
 			if (errno == ENOMSG)
 			{
-
+				printf("Master: no message at %d:%09d\n", shm_ptr[0], shm_ptr[1]);
 			}
 			else 
 			{
@@ -553,8 +575,10 @@ int main(int argc, char* argv[])
 				int r = rcvbuf.resId;
 				if (!rcvbuf.isRelease)
 				{
+					printf("Master: Process %d REQUESTS R%d at time %d:%09d\n", pid, r, shm_ptr[0], shm_ptr[1]);
 					if (resTable[r].available > 0)
 					{
+						printf("Master: GRANTING R%d to PRocess %d (avail:%d->%d)\n", r, pid, resTable[r].available, resTable[r].available-1);
 						resTable[r].available--;
 						resTable[r].allocation[indx]++;
 						processTable[indx].held[r]++;
@@ -570,16 +594,19 @@ int main(int argc, char* argv[])
 					
 					else 
 					{
+						printf("Master: no instances of R%d for Process %d; enqueueing\n", r, pid);
 						resTable[r].request[indx]++;
 						resTable[r].waitQueue.push(indx);
 					}
 				}
 				else
 				{
+					printf("Master: Process %d RELEASES R%d at time %d:%09d\n", pid, r, shm_ptr[0], shm_ptr[1]);
 					resTable[r].allocation[indx]--;
 					processTable[indx].held[r]--;
 					resTable[r].available++;
 
+					printf("Master: ACK release of R%d from Process %d (avail:%d)\n", r, pid, resTable[r].available);
 					buf.mtype = rcvbuf.mtype;
 					buf.granted = true;
 					if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
@@ -610,8 +637,6 @@ int main(int argc, char* argv[])
 			}
 		}
 
-
-		printInfo(18);
 	}
 
 	

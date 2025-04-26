@@ -1,0 +1,65 @@
+OSS PID: 472583 SysClockS: 0 SysClockNano: 500000000
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 1 SysClockNano: 0
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 1 SysClockNano: 500000000
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 2 SysClockNano: 0
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 2 SysClockNano: 500000000
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 3 SysClockNano: 0
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 3 SysClockNano: 500000000
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 4 SysClockNano: 0
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 4 SysClockNano: 500000000
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 5 SysClockNano: 0
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 5 SysClockNano: 500000000
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 6 SysClockNano: 0
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
+OSS PID: 472583 SysClockS: 6 SysClockNano: 500000000
+ Process Table:
+Entry	Occupied	PID	StartS	StartNs
+0	1		472586	0	20000000
+
