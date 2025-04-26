@@ -423,10 +423,40 @@ int main(int argc, char* argv[])
 	long long nSpawnT = currTimeNs + options.interval;
 	// Loop that will continue until amount of 100 total child processes is reached or until running processes is 0
 	// Ensures only 100 total  processes are able to run, and that no processses are still running when the loop ends
-	while (total < 100 ||  running > 0)
+	while (total < options.proc ||  running > 0)
 	{
 		// Update system clock
 		incrementClock();
+
+		pid_t pid;
+		int status;
+		// Loop to terminate any finished children
+		while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+		{
+			int indx;
+			for (int i = 0; i < options.proc; i++)
+			{
+				if (processTable[i].occupied == 1 && processTable[i].pid == pid)
+				{
+					indx = i;
+					break;
+				}
+			}
+
+			// if (idx < 0) continue; (w/ indx initially set to -1)
+
+			for (int i = 0; i < 5; i++)
+			{
+				int hCount = processTable[indx].held[r];
+				if (hCount > 0)
+				{
+					resTable[r].available += hCount;
+					resTable[r].allocation[indx] = 0;
+					processTable[indx].held[r] = 0;
+				}
+				resTable[r].request[indx] = 0;
+			}
+		}
 
 		// Calculate time since last print for sec and ns
 		long long int printDiffSec = shm_ptr[0] - lastPrintSec;
@@ -442,7 +472,7 @@ int main(int argc, char* argv[])
 
 		if (printTotDiff >= 500000000) // Determine if time of last print surpasssed .5 sec system time
 		{
-			// If true, print table and MLFQ info and update time since last print in sec and ns
+			// If true, print table and update time since last print in sec and ns
 			printInfo(18);
 			lastPrintSec = shm_ptr[0];
 			lastPrintNs = shm_ptr[1];
@@ -451,7 +481,7 @@ int main(int argc, char* argv[])
 		currTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
 		// Determine if a new child process can be spawned
 		// Must be greater than next spawn time, less than total process allowed (100), and less than simultanous processes allowed (18)
-		if (currTimeNs >= nSpawnT && total < 100  && running < 18)
+		if (currTimeNs >= nSpawnT && total < options.proc  && running < options.simul)
 		{
 			//Fork new child
 			pid_t childPid = fork();

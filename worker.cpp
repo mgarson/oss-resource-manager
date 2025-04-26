@@ -101,7 +101,7 @@ int main(int argc, char* argv[])
 	int held[MAX_RES] = {0};
 
 	long long startTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
-	long long lastTermCh = startTimeNs;
+	long long lastTermChk = startTimeNs;
 
 	srand(getpid());
 	long long nAct = startTimeNs + (rand() % BOUND_NS);
@@ -129,14 +129,14 @@ int main(int argc, char* argv[])
 							perror("msgsnd release");
 							exit(1);
 						}
-						//addOverhead()
+						//addTime()
 						
 						if (msgrcv(msqid, &rcvbuf, sizeof(rcvbuf) - sizeof(long), getpid(), 0) == -1)
 						{
 							perror("msgrcv release ack");
 							exit(1);
 						}
-						//addOverhead
+						//addTime
 						
 					}
 				}
@@ -144,7 +144,7 @@ int main(int argc, char* argv[])
 			}
 		}
 
-		if (currTimeNs >= nextAction)
+		if (currTimeNs >= nAct)
 		{
 			int outcome = rand() % 100;
 			bool release;
@@ -164,13 +164,13 @@ int main(int argc, char* argv[])
 						break;
 					tries++;
 				}
-				// Double check this should be done
 				if (tries == MAX_RES)
 				{
-					release = false;
+					nAct = currTimeNs + (rand() % BOUND_NS);
+					continue;
 				}
 			}
-			if (!release)
+			else // Request
 			{
 				int tries = 0;
 				while (tries < MAX_RES)
@@ -186,11 +186,37 @@ int main(int argc, char* argv[])
 					continue;
 				}
 			}
-		}
+		
 
-		buf.mtype = 1;
-		buf.resId = r;
-		buf.isRelease = release;
+			buf.mtype = 1;
+			buf.resId = r;
+			buf.isRelease = release;
+			buf.granted = false;
+			if (msgsnd(msqid, &buf, sizeof(buf) - sizeof(long), 0) == -1)
+			{
+				perror("msgsnd request");
+				exit(1);
+			}
+
+			//addTime()
+		
+			// Wait until Oss sends a message back
+			if (msgrcv(msqid, &rcvbuf, sizeof(rcvbuf) - sizeof(long), getpid(), 0) == -1)
+			{
+				perror("msgrcv grant");
+				exit(1);
+			}
+
+			//addTime()
+
+			if (rcvbuf.granted && !release) // If new resource was received
+			{
+				// Increment held at resoure's location 
+				held[r]++;
+			}
+
+			nAct = currTimeNs + (rand() % BOUND_NS);
+		}
 	}
 
 
