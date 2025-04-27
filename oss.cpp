@@ -65,6 +65,7 @@ typedef struct
 typedef struct msgbuffer 
 {
 	long mtype; // Message type used for message queue
+	pid_t pid;
 	int resId; // Which resource
 	bool isRelease; // False means requested, true means release
 	bool granted; // Grant resources to worker
@@ -460,9 +461,9 @@ int main(int argc, char* argv[])
 				int hCount = processTable[indx].held[i];
 				if (hCount > 0)
 				{
-					resTable[i].available += hCount;
-					resTable[i].allocation[indx] = 0;
-					processTable[indx].held[i] = 0;
+					//resTable[i].available += hCount;
+					//resTable[i].allocation[indx] = 0;
+					//processTable[indx].held[i] = 0;
 				}
 				resTable[i].request[indx] = 0;
 
@@ -550,7 +551,7 @@ int main(int argc, char* argv[])
 		{
 			if (errno == ENOMSG)
 			{
-				printf("Master: no message at %d:%09d\n", shm_ptr[0], shm_ptr[1]);
+				//printf("Master: no message at %d:%09d\n", shm_ptr[0], shm_ptr[1]);
 			}
 			else 
 			{
@@ -563,7 +564,7 @@ int main(int argc, char* argv[])
 			int indx = -1;
 			for (int i = 0; i < 18; i++)
 			{
-				if (processTable[i].occupied == 1 && processTable[i].pid == rcvbuf.mtype)
+				if (processTable[i].occupied == 1 && processTable[i].pid == rcvbuf.pid)
 				{
 					indx = i;
 					break;
@@ -575,15 +576,15 @@ int main(int argc, char* argv[])
 				int r = rcvbuf.resId;
 				if (!rcvbuf.isRelease)
 				{
-					printf("Master: Process %d REQUESTS R%d at time %d:%09d\n", pid, r, shm_ptr[0], shm_ptr[1]);
+					printf("Master: Process %d REQUESTS R%d at time %d:%09d\n", rcvbuf.pid, r, shm_ptr[0], shm_ptr[1]);
 					if (resTable[r].available > 0)
 					{
-						printf("Master: GRANTING R%d to PRocess %d (avail:%d->%d)\n", r, pid, resTable[r].available, resTable[r].available-1);
+						printf("Master: GRANTING R%d to PRocess %d (avail:%d->%d)\n", r, rcvbuf.pid, resTable[r].available, resTable[r].available-1);
 						resTable[r].available--;
 						resTable[r].allocation[indx]++;
 						processTable[indx].held[r]++;
 
-						buf.mtype = rcvbuf.mtype;
+						buf.mtype = rcvbuf.pid;
 						buf.granted = true;
 						if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
 						{
@@ -601,13 +602,13 @@ int main(int argc, char* argv[])
 				}
 				else
 				{
-					printf("Master: Process %d RELEASES R%d at time %d:%09d\n", pid, r, shm_ptr[0], shm_ptr[1]);
+					printf("Master: Process %d RELEASES R%d at time %d:%09d\n", rcvbuf.pid, r, shm_ptr[0], shm_ptr[1]);
 					resTable[r].allocation[indx]--;
 					processTable[indx].held[r]--;
 					resTable[r].available++;
 
-					printf("Master: ACK release of R%d from Process %d (avail:%d)\n", r, pid, resTable[r].available);
-					buf.mtype = rcvbuf.mtype;
+					printf("Master: ACK release of R%d from Process %d (avail:%d)\n", r, rcvbuf.pid, resTable[r].available);
+					buf.mtype = rcvbuf.pid;
 					buf.granted = true;
 					if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
 					{

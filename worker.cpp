@@ -21,13 +21,14 @@
 #define PERMS 0644
 #define MAX_RES 5
 #define INST_PER_RES 10
-#define BOUND_NS 100000
+#define BOUND_NS 10000
 #define TERM_CHECK_NS 250000000
-#define LIFE_NS 5000000000
+#define LIFE_NS 1000000000
 
 typedef struct msgbuffer
 {
 	long mtype;
+	pid_t pid;
 	int resId;
 	bool isRelease;
 	bool granted;
@@ -119,8 +120,9 @@ int main(int argc, char* argv[])
 				printf("Worker: terminating now\n");
 				for (int i = 0; i < MAX_RES; i++)
 				{
-					while (held[i]-- > 0)
+					while (held[i] > 0)
 					{
+						held[i]--;
 						buf.mtype = 1;
 						buf.resId = i;
 						buf.isRelease = true;
@@ -150,9 +152,9 @@ int main(int argc, char* argv[])
 			int outcome = rand() % 100;
 			bool release;
 			if (outcome > 30)
-				release = true;
-			else
 				release = false;
+			else
+				release = true;
 
 			int r;
 			if (release)
@@ -177,7 +179,7 @@ int main(int argc, char* argv[])
 				while (tries < MAX_RES)
 				{
 					r = rand() % MAX_RES;
-					if (held[r] > 0)
+					if (held[r] < INST_PER_RES)
 						break;
 					tries++;
 				}
@@ -190,6 +192,7 @@ int main(int argc, char* argv[])
 		
 
 			buf.mtype = 1;
+			buf.pid = getpid();
 			buf.resId = r;
 			buf.isRelease = release;
 			buf.granted = false;
@@ -210,10 +213,13 @@ int main(int argc, char* argv[])
 
 			//addTime()
 
-			if (rcvbuf.granted && !release) // If new resource was received
+			if (rcvbuf.granted) // If new resource was received
 			{
-				// Increment held at resoure's location 
-				held[r]++;
+				if (release)
+					held[r]--;
+				else
+					// Increment held at resoure's location 
+					held[r]++;
 			}
 
 			nAct = currTimeNs + (rand() % BOUND_NS);
