@@ -30,6 +30,8 @@
 #include <queue>
 
 #define PERMS 0644
+#define MAX_RES 5
+#define INST_PER_RES 10
 
 using namespace std;
 
@@ -75,13 +77,25 @@ typedef struct msgbuffer
 PCB* processTable; // Process control block table to track child processes
 Resource* resTable;
 
+int running; // Amount of running processes in system
+
 int *shm_ptr; // Shared memory pointer to store system clock
 int shm_id; // Shared memory ID
 
 int msqid; // Queue ID for communication
+msgbuffer buf;
+msgbuffer rcvbuf;
 
 bool logging = false; // Bool to determine if output should also print to logfile
 FILE* logfile = NULL; // Pointer to logfile
+
+int immGrant = 0;
+int waitGrant = 0;
+int regTerms = 0;
+int dlRuns = 0;
+int dlKills = 0;
+int totDlProcs = 0;
+int dlCnt = 0;
 
 void print_usage(const char * app)
 {
@@ -209,14 +223,157 @@ void signal_handler(int sig)
 	exit(1);
 }
 
+bool req_lt_avail(int p, int m, int work[])
+{
+	for (int i = 0; i < m; i++)
+	{
+		if (resTable[i].request[p] > work[i])
+			return false;
+	}
+	return true;
+}
+
+bool deadlock(int m, int n)
+{
+	int work[m];
+	bool finish[n];
+
+	for (int i = 0; i < m; i++)
+	{
+		work[i] = resTable[i].available;
+	}
+
+	for (int i = 0; i < n; i++)
+		finish[i] = false;
+
+	for (int i = 0; i < n; i++)
+	{
+		if (finish[i]) continue;
+
+		if (!processTable[i].occupied)
+		{
+			finish[i] = true;
+			continue;
+		}
+		if (req_lt_avail(i, m, work))
+		{
+			finish[i] = true;
+			for (int j = 0; j < m; j++)
+				work[j] += resTable[j].allocation[i];
+			i = -1;
+		}
+	}
+
+	int cnt = 0;
+	for (int i = 0; i < n; i++)
+	{
+		if (processTable[i].occupied && !finish[i])
+			cnt++;
+	}
+
+	dlCnt = cnt;
+
+	if (cnt <= 0)
+		return false;
+
+	else return true;
+}
+
+void recoverDeadlock(int m, int n)
+{
+	
+	int work[m];
+	bool finish[n];
+	for (int i = 0; i < m; i++)
+	{
+		work[i] = resTable[i].available;
+	}
+	for (int i = 0; i < n; i++)
+	{
+		finish[i] = false;
+	}
+
+	bool prog;
+	do
+	{
+		prog = false;
+		for (int i = 0; i < n; i++)
+		{
+			if (!finish[i] && processTable[i].occupied && req_lt_avail(i, m, work))
+			{
+				finish[i] = true;
+				prog = true;
+				for (int j = 0; j < m; j++)
+					work[j] += resTable[j].allocation[i];
+			}
+		}
+	} while (prog);
+
+	int victim = -1;
+	for (int i = 0; i < n; i++)
+	{
+		if (processTable[i].occupied && !finish[i])
+		{
+			victim = i;
+			break;
+		}
+	}
+
+	if (victim < 0)
+		return;
+
+	pid_t vpid = processTable[victim].pid;
+	printf("Master: Running deadlock recovery at time %d:%09d. Deadlocked process: P%d\n", shm_ptr[0], shm_ptr[1], victim);
+	printf("Master: Terminating P%d (pid %d) to recover\n", victim, vpid);
+	dlKills++;
+	kill(vpid, SIGKILL);
+	waitpid(vpid, NULL, 0);
+
+	for (int i = 0; i < m; i++)
+	{
+		int held = processTable[victim].held[i];
+		if (held > 0)
+		{
+			resTable[i].available += held;
+			resTable[i].allocation[victim] = 0;
+			processTable[victim].held[i] = 0;
+		}
+		resTable[i].request[victim] = 0;
+
+		while (!resTable[i].waitQueue.empty() && resTable[i].available > 0)
+		{
+			int indx = resTable[i].waitQueue.front();
+			resTable[i].waitQueue.pop();
+
+			resTable[i].available--;
+			resTable[i].allocation[indx]++;
+			processTable[indx].held[i]++;
+			resTable[i].request[indx]--;
+
+			buf.mtype = processTable[indx].pid;
+			buf.granted = true;
+			if (msgsnd(msqid, &buf, sizeof(buf) - sizeof(long), 0) == -1)
+			{
+				perror("msgsnd recovery wakeup");
+				exit(1);
+			}
+			
+
+		}
+	}
+
+	processTable[victim].occupied = 0;
+	running--;
+	
+
+}
+
 int main(int argc, char* argv[])
 {
 	// Signal that will terminate program after 3 sec (real time)
 	signal(SIGALRM, signal_handler);
 	alarm(3);
 
-	msgbuffer buf; // Buffer for sending messages to child processes
-	msgbuffer rcvbuf; // Buffer for receiving messages from child processes
 	key_t key; // Key to access queue
 
 	// Create file to track message queue
@@ -257,7 +414,7 @@ int main(int argc, char* argv[])
 
 	// Values to keep track of child iterations
 	int total = 0; // Total amount of processes
-	int running = 0;
+	running = 0;
 	//int lastForkSec = 0; // Time in sec since last fork
 	//int lastForkNs = 0; // Time in ns since last fork
 	int msgsnt = 0;
@@ -341,6 +498,12 @@ int main(int argc, char* argv[])
 
 				// Set simul to optarg and break
 				options.simul = atoi(optarg);
+				if (options.simul > 18)
+				{
+					fprintf(stderr, "Error! Value entered for options s cannot exceed 18. %d > 18.\n", options.simul);
+					print_usage(argv[0]);
+					return EXIT_FAILURE;
+				}
 				break;
 
 			case 'i':
@@ -419,6 +582,9 @@ int main(int argc, char* argv[])
 	long long int lastPrintSec = shm_ptr[0];
 	long long int lastPrintNs = shm_ptr[1];
 
+	long long lastChkSec = shm_ptr[0];
+	long long lastChkNs = shm_ptr[1];
+
 	// Initialize process table, all values set to 0
 	for (int i = 0; i < 18; i++)
 	{
@@ -444,6 +610,8 @@ int main(int argc, char* argv[])
 		// Loop to terminate any finished children
 		while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
 		{
+			regTerms++;
+
 			int indx;
 			for (int i = 0; i < options.proc; i++)
 			{
@@ -481,6 +649,33 @@ int main(int argc, char* argv[])
 			running--;
 		}
 
+		long long chkDiffSec = shm_ptr[0] - lastChkSec;
+		long long chkDiffNs = shm_ptr[1] - lastChkNs;
+		if (chkDiffNs < 0)
+		{
+			chkDiffSec--;
+			chkDiffNs += 1000000000;
+		}
+		long long chkTotDiff = chkDiffSec * 1000000000 + chkDiffNs;
+
+		if (chkTotDiff >= 1000000000)
+		{
+			if (deadlock(MAX_RES, options.simul))
+			{
+				dlRuns++;
+				totDlProcs += dlCnt;
+			}
+			while (deadlock(MAX_RES, options.simul))
+			{
+				dlKills++;
+				printf("\nMaster: Deadlock detected at time %d:%09d\n\n", shm_ptr[0], shm_ptr[1]);
+				recoverDeadlock(MAX_RES, options.simul);
+			}
+			
+			lastChkSec = shm_ptr[0];
+			lastChkNs = shm_ptr[1];
+		}
+
 		// Calculate time since last print for sec and ns
 		long long int printDiffSec = shm_ptr[0] - lastPrintSec;
 		long long int printDiffNs = shm_ptr[1] - lastPrintNs;
@@ -496,7 +691,7 @@ int main(int argc, char* argv[])
 		if (printTotDiff >= 500000000) // Determine if time of last print surpasssed .5 sec system time
 		{
 			// If true, print table and update time since last print in sec and ns
-			printInfo(18);
+			//printInfo(18);
 			lastPrintSec = shm_ptr[0];
 			lastPrintNs = shm_ptr[1];
 		}
@@ -591,11 +786,12 @@ int main(int argc, char* argv[])
 							perror("msgsnd grant");
 							exit(1);
 						}
+						immGrant++;
 					}
 					
 					else 
 					{
-						printf("Master: no instances of R%d for Process %d; enqueueing\n", r, pid);
+						printf("Master: no instances of R%d for Process %d; enqueueing\n", r, rcvbuf.pid);
 						resTable[r].request[indx]++;
 						resTable[r].waitQueue.push(indx);
 					}
@@ -632,6 +828,7 @@ int main(int argc, char* argv[])
 							perror("msgsnd wakeup");
 							exit(1);
 						}
+						waitGrant++;
 					}
 				}
 
@@ -640,7 +837,30 @@ int main(int argc, char* argv[])
 
 	}
 
-	
+	printf("Total dl procs: %d\n", totDlProcs);
+	double dlPerc;
+        if (totDlProcs > 0)
+		dlPerc = 100.0 * dlKills / totDlProcs;
+
+
+	printf("\n----Final Statistics----\n");
+	printf("Immediate grants: %d\n", immGrant);
+	printf("Grants after waiting: %d\n", waitGrant);
+	printf("Successful terminations: %d\n", regTerms);
+	printf("Deadlock detections: %d\n", dlRuns);
+	printf("Processes killed by deadlock recovery: %d\n", dlKills);
+	printf("Percentage of deadlocked processes that were killed: %d%%\n", (int)dlPerc);
+
+	if (logging)
+	{
+		fprintf(logfile, "\n----Final Statistics----\n");
+		fprintf(logfile, "Immediate grants: %d\n", immGrant);
+		fprintf(logfile, "Grants after waiting: %d\n", waitGrant);
+		fprintf(logfile, "Successful terminations: %d\n", regTerms);
+		fprintf(logfile, "Deadlock detections: %d\n", dlRuns);
+		fprintf(logfile, "Processes killed by deadlock recovery: %d\n", dlKills);
+		fprintf(logfile, "Percentage of deadlocked processes that were killed: %d%%\n", (int)dlPerc);
+	}
 
 	// Detach from shared memory and remove it
 	if(shmdt(shm_ptr) == -1)

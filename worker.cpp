@@ -21,9 +21,10 @@
 #define PERMS 0644
 #define MAX_RES 5
 #define INST_PER_RES 10
-#define BOUND_NS 10000
+#define BOUND_NS 100
 #define TERM_CHECK_NS 250000000
-#define LIFE_NS 1000000000
+#define LIFE_NS 2000000000
+#define TERM_PROB 40
 
 typedef struct msgbuffer
 {
@@ -117,33 +118,44 @@ int main(int argc, char* argv[])
 			lastTermChk = currTimeNs;
 			if (currTimeNs - startTimeNs >= LIFE_NS)
 			{
-				printf("Worker: terminating now\n");
-				for (int i = 0; i < MAX_RES; i++)
+				int die = rand() % 100;
+				if (die < TERM_PROB)
 				{
-					while (held[i] > 0)
+					for (int i = 0; i < MAX_RES; i++)
 					{
-						held[i]--;
-						buf.mtype = 1;
-						buf.resId = i;
-						buf.isRelease = true;
+						while (held[i] > 0)
+						{
+							held[i]--;
+							buf.mtype = 1;
+							buf.resId = i;
+							buf.isRelease = true;
 
-						if (msgsnd(msqid, &buf, sizeof(buf) - sizeof(long), 0) == -1)
-						{
-							perror("msgsnd release");
-							exit(1);
-						}
-						//addTime()
+							if (msgsnd(msqid, &buf, sizeof(buf) - sizeof(long), 0) == -1)
+							{
+								perror("msgsnd release");
+								exit(1);
+							}
+							addTime();
+							
+							if (msgrcv(msqid, &rcvbuf, sizeof(rcvbuf) - sizeof(long), getpid(), 0) == -1)
+							{
+								perror("msgrcv release ack");
+								exit(1);
+							}
+							addTime();
+
+							//DOUBLE CHECK THAT TIME WAS ADDED AT CORRECT SPOTS
 						
-						if (msgrcv(msqid, &rcvbuf, sizeof(rcvbuf) - sizeof(long), getpid(), 0) == -1)
-						{
-							perror("msgrcv release ack");
-							exit(1);
 						}
-						//addTime
-						
 					}
+
+					if (shmdt(shm_ptr) == -1)
+					{
+						perror("shmdt failed");
+						exit(1);
+					}
+					exit(0);
 				}
-				break;
 			}
 		}
 
@@ -151,7 +163,7 @@ int main(int argc, char* argv[])
 		{
 			int outcome = rand() % 100;
 			bool release;
-			if (outcome > 30)
+			if (outcome > 5)
 				release = false;
 			else
 				release = true;
@@ -202,7 +214,7 @@ int main(int argc, char* argv[])
 				exit(1);
 			}
 
-			//addTime()
+			addTime();
 		
 			// Wait until Oss sends a message back
 			if (msgrcv(msqid, &rcvbuf, sizeof(rcvbuf) - sizeof(long), getpid(), 0) == -1)
@@ -211,7 +223,7 @@ int main(int argc, char* argv[])
 				exit(1);
 			}
 
-			//addTime()
+			addTime();
 
 			if (rcvbuf.granted) // If new resource was received
 			{
