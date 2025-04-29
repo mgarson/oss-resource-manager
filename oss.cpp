@@ -1,17 +1,17 @@
-// Operating Systems Project 4
+
+// Operating Systems Project 5
 // Author: Maija Garson
-// Date: 04/18/2025
-// Description: A program that simulates an operating system scheduler using a multi-level feedback queue.
-// This program will run in a loop until it forks up to 100 child processes, with 18 allowed simultaneously.
-// This program creates a system clock in shared memory and uses it to determine time within the program. 
-// Information about the child processes are stored in a Process Control Block table. This program schedules 
-// children by sending messages to the child processes using a message queue, these messages sent the child
-// the total allowed time quantum it can run before stopping. The quantum is based on which queue the child
-// is in at that time. It will always schedule the children in the highest priority queue. It will then wait
-// for a response from the child, which informs oss how much of its time it used and also its status (terminated,
-// blocked, or used full quantum). This program then puts the processes that did not terminate back into a
-// queue based on its status and the queue it was previously in. This program will also print the PCB table
-// and queue states every half second of system time. At the end, it will calculate and print statistics based on the run.
+// Date: 04/29/2025
+// Description: A program that simulates a resource management operating system with deadlock detection and recovery.
+// This program runs until it has forked the total amount of processes specified in the command line, while allowing a
+// specified amount of processes to run simultanously. It will allocate shared memory to represent a system clock. It will
+// also keep track of a process control block table for all processes and a resource table for 5 resource types with 10 
+// instances each. It will receive messages from child processes that represent a resource request or release. If it 
+// receives a request, it will grant the request if possible or it will add the child to a wait queue if not possible.
+// When requests/releases are received, it will update values in both tables to reflect this. It will print both tables 
+// every .5 sec of system time. It will run a deadlock detection algorithm every 1 sec of system time. If a deadlock is
+// found, it will run a recovery algorithm, incrementally killing processes, until the system is no longer in a deadlock.
+// It will calculate and print final statistics at the end of each run.
 // The program will send a kill signal to all processes and terminate if 3 real-life seconds are reached.
 
 #include <sys/ipc.h>
@@ -32,9 +32,11 @@
 #define PERMS 0644
 #define MAX_RES 5
 #define INST_PER_RES 10
+#define MAX_PROC 18
 
 using namespace std;
 
+// Structure for command line options
 typedef struct
 {
 	int proc;
@@ -54,13 +56,14 @@ typedef struct
 	int waitingOn = -1;
 } PCB;
 
+// Structure to hold resources in the system
 typedef struct
 {
-	int total;
-	int available;
-	int allocation[18] = {0};
-	int request[18] = {0};
-	queue<int> waitQueue;
+	int total; // Total instances of resource
+	int available; // Amount currently available
+	int allocation[MAX_PROC] = {0}; // How many resources held by process
+	int request[MAX_PROC] = {0}; // How many requests from proces
+	queue<int> waitQueue; // Holds processes waiting for resources
 } Resource;
 
 // Message buffer for communication between OSS and child processes
@@ -83,26 +86,29 @@ int *shm_ptr; // Shared memory pointer to store system clock
 int shm_id; // Shared memory ID
 
 int msqid; // Queue ID for communication
-msgbuffer buf;
-msgbuffer rcvbuf;
+msgbuffer buf; // Message buffer to send messages
+msgbuffer rcvbuf; // Message buffer to receive messages
 
 bool logging = false; // Bool to determine if output should also print to logfile
 FILE* logfile = NULL; // Pointer to logfile
 
-int immGrant = 0;
-int waitGrant = 0;
-int regTerms = 0;
-int dlRuns = 0;
-int dlKills = 0;
-int totDlProcs = 0;
-int dlCnt = 0;
+// Variables to determine final statistics
+int immGrant = 0; // Amount of resource requests immediately granted
+int waitGrant = 0; // Amount of resource requests granted after process waited
+int regTerms = 0; // Amount of processes that terminated normally on their own
+int dlRuns = 0; // Amount of times deadlock detection alg was run
+int dlKills = 0; // Amount of processes killed by deadlock recovery alg
+int totDlProcs = 0; // Total amount of processes that became deadlocked
+int dlCnt = 0; // Number of processes in each deadlock run
+int lastDl[MAX_PROC]; // Holds the pids of processes in each deadlock
 
 void print_usage(const char * app)
 {
-	fprintf(stdout, "usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInMsToLaunchChildren\n", app);
+	fprintf(stdout, "usage: %s [-h] [-n proc] [-s simul] [-i intervalInMsToLaunchChildren] [-f]\n", app);
 	fprintf(stdout, "      proc is the number of total children to launch\n");
 	fprintf(stdout, "      simul indicates how many children are to be allowed to run simultaneously\n");
-	fprintf(stdout, "      iter is the number to pass to the user process\n");
+	fprintf(stdout, "      itnterval is the time between launching children\n");
+	fprintf(stdout, "      selecting f will output to a logfile as well\n");
 }
 
 // Function to increment system clock in seconds and nanoseconds
@@ -158,17 +164,16 @@ void shareMem()
 	shm_ptr[1] = 0;
 }
 
-// FUnction to print formatted process table and contents of the three different priority queues
+// FUnction to print formatted process table and resource table to console. Will also print to logfile if necessary.
 void printInfo(int n)
 {
-	
-	// Print to console
+
+	// Print process control block 	
 	printf("OSS PID: %d SysClockS: %u SysClockNano: %u\n Process Table:\n", getpid(), shm_ptr[0], shm_ptr[1]);
 	printf("Entry\tOccupied\tPID\tStartS\tStartNs\n");
 	
-	// Print to log file as well
-	fprintf(logfile, "OSS PID: %d SysClockS: %u SysClockNano: %u\n Process Table:\n", getpid(), shm_ptr[0], shm_ptr[1]);
-	fprintf(logfile,"Entry\tOccupied\tPID\tStartS\tStartNs\n");
+	if(logging) fprintf(logfile, "OSS PID: %d SysClockS: %u SysClockNano: %u\n Process Table:\n", getpid(), shm_ptr[0], shm_ptr[1]);
+	if (logging) fprintf(logfile,"Entry\tOccupied\tPID\tStartS\tStartNs\n");
 
 	for (int i = 0; i < n; i++)
 	{
@@ -176,11 +181,44 @@ void printInfo(int n)
 		if (processTable[i].occupied == 1)
 		{
 			printf("%d\t%d\t\t%d\t%u\t%u\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
-			fprintf(logfile, "%d\t%d\t\t%d\t%u\t%u\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
+			if (logging) fprintf(logfile, "%d\t%d\t\t%d\t%u\t%u\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
 		}
 	}
 	printf("\n");
-	fprintf(logfile, "\n");
+	if (logging) fprintf(logfile, "\n");
+
+	// Print resource table
+	printf("Current system resources\n");
+	if (logging) fprintf(logfile, "Current system resources\n");
+
+	printf("\t");
+	if (logging) fprintf(logfile, "\t");
+	for (int i = 0; i < MAX_RES; i++)
+	{
+		printf("R%d\t", i);
+		if (logging) fprintf(logfile, "R%d\t", i);
+	}
+	printf("\n");
+	if (logging) fprintf(logfile, "\n");
+
+	for (int i = 0; i < n; i++)
+	{
+		// Print resources held by process only if process is occupied in PCB
+		if (processTable[i].occupied)
+		{
+			printf("P%d\t", i);
+			if (logging) fprintf(logfile, "P%d\t", i);
+			for (int j = 0; j < MAX_RES; j++)
+			{
+				printf("%d\t", processTable[i].held[j]);
+				if (logging) fprintf(logfile, "%d\t", processTable[i].held[j]);
+			}
+			printf("\n");
+			if (logging) fprintf(logfile, "\n");
+		}
+	}
+	printf("\n");
+	if (logging) fprintf(logfile, "\n");
 	
 }
 
@@ -223,112 +261,184 @@ void signal_handler(int sig)
 	exit(1);
 }
 
+// Function to check if process requests (p) for each resource type amount (m) is less than available resources (work[])
 bool req_lt_avail(int p, int m, int work[])
 {
 	for (int i = 0; i < m; i++)
 	{
+		// Return false if requests are greater than available
 		if (resTable[i].request[p] > work[i])
 			return false;
 	}
+	// Otherwise, return true
 	return true;
 }
 
+// Function to detect if system is deadlocked
 bool deadlock(int m, int n)
 {
-	int work[m];
-	bool finish[n];
+	int work[m]; // Represents currently available resources
+	bool finish[n]; // Represents which processes can finish (true) and which cannot get requests met (false)
 
+	// Initialize work to currently available resources
 	for (int i = 0; i < m; i++)
 	{
 		work[i] = resTable[i].available;
 	}
 
+	// Initialize finsih to false initially
 	for (int i = 0; i < n; i++)
 		finish[i] = false;
 
+	// Loop through to find any processes that are able to finish
 	for (int i = 0; i < n; i++)
 	{
+		// Continue if process was determined able to finish
 		if (finish[i]) continue;
 
+		// If process is unoccupied in table, treat as finished
 		if (!processTable[i].occupied)
 		{
 			finish[i] = true;
 			continue;
 		}
+		// Determine if process's requests can be met
 		if (req_lt_avail(i, m, work))
 		{
+			// If true, mark process as able to finish
 			finish[i] = true;
+			// Release processes allocated resources back to work within the function
 			for (int j = 0; j < m; j++)
 				work[j] += resTable[j].allocation[i];
+			// Restart loop from 0 
 			i = -1;
 		}
 	}
 
+	// Represents count of deadlocked processes
 	int cnt = 0;
+	// Find processes that are unable to finish and increment count and add to currently deadlocked array
 	for (int i = 0; i < n; i++)
 	{
 		if (processTable[i].occupied && !finish[i])
+		{
+			lastDl[cnt] = i;
 			cnt++;
+		}
 	}
 
+	// Set global current deadlock count to cnt
 	dlCnt = cnt;
 
+	// Return false if no deadlocked processes were counted
 	if (cnt <= 0)
 		return false;
 
+	// Otherwise, return true. Meaning deadlock.
 	else return true;
 }
 
+// Function to recover from deadlock state by choosing a deadlocked process and killling it
 void recoverDeadlock(int m, int n)
 {
 	
-	int work[m];
-	bool finish[n];
+	int work[m]; // Represents resources available during recovery
+	bool finish[n]; // Represents which processes can finish (true) or stay in deadlock (false)
+
+	// Initialize work to current available resources
 	for (int i = 0; i < m; i++)
 	{
 		work[i] = resTable[i].available;
 	}
+	// Initialize finish to false initially
 	for (int i = 0; i < n; i++)
 	{
 		finish[i] = false;
 	}
 
-	bool prog;
+	bool prog; // Represents if any process has made progress in previous loop
+	
+	// Determine if any processes have requests that can be met
 	do
 	{
+		// Initially false
 		prog = false;
+		// Loop through and determine if any process is occupied, not marked as finished, and able to have requests met
 		for (int i = 0; i < n; i++)
 		{
 			if (!finish[i] && processTable[i].occupied && req_lt_avail(i, m, work))
 			{
+				// If true, set finsih for process i to true
 				finish[i] = true;
+				// Set prog to true since progress was made
 				prog = true;
+				// Release processes allocated resources back to work within the function
 				for (int j = 0; j < m; j++)
 					work[j] += resTable[j].allocation[i];
 			}
 		}
 	} while (prog);
 
+	// Reprsents pid of process to be killed
 	int victim = -1;
+	// Loop through and find process that is occupied and unable to finish
 	for (int i = 0; i < n; i++)
 	{
 		if (processTable[i].occupied && !finish[i])
 		{
+			// If true, set victim to i and break
 			victim = i;
 			break;
 		}
 	}
 
+	// Return if victim is less than 0, means no victim was found
 	if (victim < 0)
 		return;
 
+	// Represents how many of each resource is held by victim
+	int rHeld[MAX_RES];
+	for (int i = 0; i < m; i++)
+	{
+		rHeld[i] = processTable[victim].held[i];
+	}
+	// Find victim's pid in process table
 	pid_t vpid = processTable[victim].pid;
-	printf("Master: Running deadlock recovery at time %d:%09d. Deadlocked process: P%d\n", shm_ptr[0], shm_ptr[1], victim);
-	printf("Master: Terminating P%d (pid %d) to recover\n", victim, vpid);
-	dlKills++;
+
+	printf("   Master terminating P%d to remove deadlock\n", victim);
+	if (logging) fprintf(logfile, "    Master terminating P%d to remove deadlock\n", victim);
+
+	// Kill victim and wait for it to finish
 	kill(vpid, SIGKILL);
 	waitpid(vpid, NULL, 0);
+	dlKills++;
 
+	printf("   Process P%d terminated\n", victim);
+	if (logging) fprintf(logfile, "   Process P%d terminated\n", victim);
+	printf("   Resources released: ");
+	if (logging) fprintf(logfile, "   Resources released: ");
+
+	// Loop through and list all resources released by victim
+	bool first = true; // Represents if first resource has been printed. Used to determine when to print commas.
+	for (int i = 0; i < m; i++)
+	{
+		// Print resource if more than 0
+		if (rHeld[i] > 0)
+		{
+			if (!first)
+			{
+				printf(", ");
+				if (logging) fprintf(logfile, ", ");
+			}
+			printf("R%d:%d", i, rHeld[i]);
+			if (logging) fprintf(logfile, "R%d:%d", i, rHeld[i]);
+			first = false;
+		}
+	}
+	printf("\n");
+	if (logging) fprintf(logfile, "\n");
+
+	// Put resources held by victim back into resource and clear victim's held resources
 	for (int i = 0; i < m; i++)
 	{
 		int held = processTable[victim].held[i];
@@ -338,18 +448,24 @@ void recoverDeadlock(int m, int n)
 			resTable[i].allocation[victim] = 0;
 			processTable[victim].held[i] = 0;
 		}
+		// Clear any requests from victim
 		resTable[i].request[victim] = 0;
 
+		// Loop through to find any processes waiting for resource and see if request can be mad
 		while (!resTable[i].waitQueue.empty() && resTable[i].available > 0)
-		{
+		{// If able to meet request
+			// Take next process in queue off queue and get its index
 			int indx = resTable[i].waitQueue.front();
 			resTable[i].waitQueue.pop();
 
+			// Allocate resource from available resources to resources allocated to process
 			resTable[i].available--;
 			resTable[i].allocation[indx]++;
 			processTable[indx].held[i]++;
+			// Decrement process request
 			resTable[i].request[indx]--;
 
+			// Send message to process to grant resource request
 			buf.mtype = processTable[indx].pid;
 			buf.granted = true;
 			if (msgsnd(msqid, &buf, sizeof(buf) - sizeof(long), 0) == -1)
@@ -362,7 +478,9 @@ void recoverDeadlock(int m, int n)
 		}
 	}
 
+	// Mark victim as unoccupied in process table 
 	processTable[victim].occupied = 0;
+	// Decrement amount of currently running processes
 	running--;
 	
 
@@ -394,14 +512,6 @@ int main(int argc, char* argv[])
 	}	
 
 	printf("Message queue set up\n");
-
-	// **GET RID OF THIS**
-	logfile = fopen("ossLog.txt", "w");
-	if(logfile == NULL)
-	{
-		fprintf(stderr, "Failed to open log file.\n");
-		return EXIT_FAILURE;
-	}
 
 	// Structure to hold values for options in command line argument
 	options_t options;
@@ -582,36 +692,44 @@ int main(int argc, char* argv[])
 	long long int lastPrintSec = shm_ptr[0];
 	long long int lastPrintNs = shm_ptr[1];
 
+	// Variables to track last deadlock check
 	long long lastChkSec = shm_ptr[0];
 	long long lastChkNs = shm_ptr[1];
 
-	// Initialize process table, all values set to 0
-	for (int i = 0; i < 18; i++)
+	// Initialize process table, all values set to empty
+	for (int i = 0; i < MAX_PROC; i++)
 	{
+		// Set occupied to 0
 		processTable[i].occupied = 0;
-		processTable[i].waitingOn = -1; // Double check this, rn -1 means not blocked on any resource
-		for (int j = 0; j < 5; j++) // NEED TO ADD DEFINE FOR MAX RES
+		// Set waitingon to -1, meaning process is not waiting for any resource
+		processTable[i].waitingOn = -1; 
+		for (int j = 0; j < MAX_RES; j++) 
 		{
+			// Set held resources to 0
 			processTable[i].held[j] = 0;
 		}
 	}
 
+	// Calculate current system time in ns
 	long long currTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
+	// Calculate next time to spawn a process based on command line value given for interval
 	long long nSpawnT = currTimeNs + options.interval;
-	// Loop that will continue until amount of 100 total child processes is reached or until running processes is 0
-	// Ensures only 100 total  processes are able to run, and that no processses are still running when the loop ends
+
+	// Loop that will continue until total amount of processes given are launched and all running processes are terminated
 	while (total < options.proc ||  running > 0)
 	{
 		// Update system clock
 		incrementClock();
 
+		// Loop through and terminate any process that are finished
 		pid_t pid;
 		int status;
-		// Loop to terminate any finished children
 		while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
 		{
+			// Increment regular terminations
 			regTerms++;
 
+			// Find process's location in process table
 			int indx;
 			for (int i = 0; i < options.proc; i++)
 			{
@@ -622,56 +740,81 @@ int main(int argc, char* argv[])
 				}
 			}
 
-			// if (idx < 0) continue; (w/ indx initially set to -1)
-
-			for (int i = 0; i < 5; i++)
+			// Use process table index to clear values for process
+			for (int i = 0; i < MAX_RES; i++)
 			{
-				int hCount = processTable[indx].held[i];
-				if (hCount > 0)
-				{
-					//resTable[i].available += hCount;
-					//resTable[i].allocation[indx] = 0;
-					//processTable[indx].held[i] = 0;
-				}
+				// Set request in resource table for process to 0
 				resTable[i].request[indx] = 0;
 
-				queue<int> temp;
+				queue<int> temp; // Temporary queue to loop through wait queue
+				// Loop through wait queue to determine if finished process is in queue
 				while(!resTable[i].waitQueue.empty())
 				{
+					// Incrementally remove processes from wait queue
 					int qIndx = resTable[i].waitQueue.front();
 					resTable[i].waitQueue.pop();
+					// If queue index does not match processs, add to temp queue
 					if (qIndx != indx)
 						temp.push(qIndx);
 				}
+				// Set waitqueue to temp queue
 				resTable[i].waitQueue = temp;
 			}
+			// Mark finished process as unoccupied in process table
 			processTable[indx].occupied = 0;
+			// Decrement total processes running
 			running--;
 		}
 
+		// Calculate time since last deadlock check for sec and ns
 		long long chkDiffSec = shm_ptr[0] - lastChkSec;
 		long long chkDiffNs = shm_ptr[1] - lastChkNs;
+		// Adjust ns value for subtraction resulting in negative value
 		if (chkDiffNs < 0)
 		{
 			chkDiffSec--;
 			chkDiffNs += 1000000000;
 		}
+		// Calculate total time since last deadlock check in ns
 		long long chkTotDiff = chkDiffSec * 1000000000 + chkDiffNs;
 
-		if (chkTotDiff >= 1000000000)
+		if (chkTotDiff >= 1000000000) // Determine if time of last dl check surpassed 1 sec system time
 		{
-			if (deadlock(MAX_RES, options.simul))
+			printf("Master running deadlock detection at time %d:%09d: ", shm_ptr[0], shm_ptr[1]);
+			if (logging) fprintf(logfile, "Master running deadlock detection at time %d:%09d: ", shm_ptr[0], shm_ptr[1]);
+			if (deadlock(MAX_RES, options.simul)) // Check for deadlock
 			{
+				// If true, increment the amount of deadlock runs and add deadlocked processes to total amount
 				dlRuns++;
 				totDlProcs += dlCnt;
+				// List deadlocked processes
+				printf("Processes ");
+				if (logging) fprintf(logfile, "Processes ");
+				for (int i = 0; i < dlCnt; i++)
+				{
+					printf("P%d",lastDl[i]);
+					if (logging) fprintf(logfile, "P%d", lastDl[i]);
+					if (i < dlCnt - 1)
+					{
+						printf(", ");
+						if(logging) fprintf(logfile, ", ");
+					}
+				}
+				printf(" deadlocked\n");
+				if (logging) fprintf(logfile, " deadlocked\n");
 			}
+			else // Otherwise, report no deadlock
+			{ 
+				printf("No deadlocks detected\n");
+				if (logging) fprintf(logfile, "No deadlocks detected\n");
+			}
+
 			while (deadlock(MAX_RES, options.simul))
 			{
-				dlKills++;
-				printf("\nMaster: Deadlock detected at time %d:%09d\n\n", shm_ptr[0], shm_ptr[1]);
 				recoverDeadlock(MAX_RES, options.simul);
 			}
 			
+			// Update time since last dl check to current system time for sec and ns
 			lastChkSec = shm_ptr[0];
 			lastChkNs = shm_ptr[1];
 		}
@@ -691,7 +834,7 @@ int main(int argc, char* argv[])
 		if (printTotDiff >= 500000000) // Determine if time of last print surpasssed .5 sec system time
 		{
 			// If true, print table and update time since last print in sec and ns
-			//printInfo(18);
+			printInfo(18);
 			lastPrintSec = shm_ptr[0];
 			lastPrintNs = shm_ptr[1];
 		}
@@ -736,17 +879,18 @@ int main(int argc, char* argv[])
 						break;
 					}
 				}
+				// Calculate current time and ns and determine next spawn time
 				currTimeNs = (shm_ptr[0] * 1000000000) + shm_ptr[1];
 				nSpawnT = currTimeNs + options.interval;
 
 			}
 		}
 
+		// Check for message received from worker without blocking
 		if (msgrcv(msqid, &rcvbuf, sizeof(msgbuffer) - sizeof(long), 1, IPC_NOWAIT) == -1)
 		{
 			if (errno == ENOMSG)
 			{
-				//printf("Master: no message at %d:%09d\n", shm_ptr[0], shm_ptr[1]);
 			}
 			else 
 			{
@@ -754,11 +898,13 @@ int main(int argc, char* argv[])
 				exit(1);
 			}
 		}
-		else
+		else // Message received
 		{
-			int indx = -1;
+			int indx = -1; // Represents index of process who sent message, initialized to -1
+			// Loop through process table to find index of process from its pid
 			for (int i = 0; i < 18; i++)
 			{
+				
 				if (processTable[i].occupied == 1 && processTable[i].pid == rcvbuf.pid)
 				{
 					indx = i;
@@ -766,68 +912,105 @@ int main(int argc, char* argv[])
 				}
 			}
 			
-			if (indx >= 0)
+			if (indx >= 0) // Determine if process's index was found
 			{
-				int r = rcvbuf.resId;
-				if (!rcvbuf.isRelease)
+				int r = rcvbuf.resId; // Represents id of resource that worker sent to be requested or released
+				if (!rcvbuf.isRelease) // Process is requesting
 				{
-					printf("Master: Process %d REQUESTS R%d at time %d:%09d\n", rcvbuf.pid, r, shm_ptr[0], shm_ptr[1]);
+					printf("Master has detected Process P%d requesting R%d at time %d:%09d\n", indx, r, shm_ptr[0], shm_ptr[1]);
+					if (logging)
+						fprintf(logfile, "Master has detected Process P%d requesting R%d at time %d:%09d\n", indx, r, shm_ptr[0], shm_ptr[1]);
+					// Determine if requested resource is available
 					if (resTable[r].available > 0)
 					{
-						printf("Master: GRANTING R%d to PRocess %d (avail:%d->%d)\n", r, rcvbuf.pid, resTable[r].available, resTable[r].available-1);
+						// If true grant request
+						printf("Master granting P%d requesting R%d at time %d:%09d \n", indx, r, shm_ptr[0], shm_ptr[1]);
+						if (logging) 
+							fprintf(logfile, "Master granting P%d requesting R%d at time %d:%09d \n", indx, r, shm_ptr[0], shm_ptr[1]);
+						// Decrement amount available for resource in resource table
 						resTable[r].available--;
+						// Increment amount allocated to process for resource in resource table
 						resTable[r].allocation[indx]++;
+						// Increment amount of resource held by process in process table
 						processTable[indx].held[r]++;
 
-						buf.mtype = rcvbuf.pid;
-						buf.granted = true;
+						// Prepare message to send to worker
+						buf.mtype = rcvbuf.pid; // Represents worker's pid
+						buf.granted = true; // Represents request being granted
+						// Send message to worker to notify that request is being granted
 						if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
 						{
 							perror("msgsnd grant");
 							exit(1);
 						}
+						// Increment total immediate grants
 						immGrant++;
 					}
 					
-					else 
+					else // Unable to grant request, not enough of requested resource
 					{
-						printf("Master: no instances of R%d for Process %d; enqueueing\n", r, rcvbuf.pid);
+						printf("Master: no instances of R%d available, P%d added to wait queue at time %d:%09d\n", r, indx, shm_ptr[0], shm_ptr[1]);
+						if (logging)
+							fprintf(logfile, "Master: no instances of R%d available, P%d added to wait queue at time %d:%09d\n", r, indx, shm_ptr[0], shm_ptr[1]);
+
+						// Increment request in resource table for process
 						resTable[r].request[indx]++;
+						// Add process to wait queue
 						resTable[r].waitQueue.push(indx);
 					}
 				}
-				else
+				else // Process is releasing
 				{
-					printf("Master: Process %d RELEASES R%d at time %d:%09d\n", rcvbuf.pid, r, shm_ptr[0], shm_ptr[1]);
+					// Decrement amount allocated to process for resource in resource table
 					resTable[r].allocation[indx]--;
+					// Decrement amount of resource held by process in process table
 					processTable[indx].held[r]--;
+					// Increment amount of resource available in resource table
 					resTable[r].available++;
 
-					printf("Master: ACK release of R%d from Process %d (avail:%d)\n", r, rcvbuf.pid, resTable[r].available);
-					buf.mtype = rcvbuf.pid;
-					buf.granted = true;
+					printf("Master has acknowledged Process P%d releasing R%d at time %d:%09d\n", indx, r, shm_ptr[0], shm_ptr[1]);
+					if (logging)
+						fprintf(logfile, "Master has acknowledged Process P%d releasing R%d at time %d:%09d\n", indx, r, shm_ptr[0], shm_ptr[1]);
+
+					// Prepare message to send to worker
+					buf.mtype = rcvbuf.pid; // Represents worker's pid
+					buf.granted = true; // Represents release being granted
+					// Send message to notify of release
 					if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
 					{
 						perror("msgsnd release");
 						exit(1);
 					}
+					// List resources released
+					printf("	Resources released : R%d:1\n", r);
+					if (logging)
+						fprintf(logfile, "        Resources released : R%d:1\n", r);
 
+					// Determine if any processes are waiting in wait queue
 					if (!resTable[r].waitQueue.empty())
 					{
+						// If true, get index of next waiting process and remove from queue to grant request
 						int n = resTable[r].waitQueue.front();
 						resTable[r].waitQueue.pop();
+						// Decrement amount of resource available in rcs table
 						resTable[r].available--;
+						// Increment allocation of resource for process in rcs table
 						resTable[r].allocation[n]++;
+						// Increment amount of resource held by process in process table
 						processTable[n].held[r]++;
+						// Decrement requests from process in rcs table
 						resTable[r].request[n]--;
 
-						buf.mtype = processTable[n].pid;
-						buf.granted = true;
+						// Prepare message to send to process
+						buf.mtype = processTable[n].pid; // Represents pid of worker
+						buf.granted = true; // Represents request being granted
+						// Send message to worker to notify that request is granted
 						if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
 						{
 							perror("msgsnd wakeup");
 							exit(1);
 						}
+						// Increment total wait grants
 						waitGrant++;
 					}
 				}
@@ -837,20 +1020,22 @@ int main(int argc, char* argv[])
 
 	}
 
-	printf("Total dl procs: %d\n", totDlProcs);
+	// Calculate percentage of deadlocked processes that were killed, ensuring no division by 0
 	double dlPerc;
         if (totDlProcs > 0)
 		dlPerc = 100.0 * dlKills / totDlProcs;
 
 
+	// Print final statistics to console
 	printf("\n----Final Statistics----\n");
 	printf("Immediate grants: %d\n", immGrant);
 	printf("Grants after waiting: %d\n", waitGrant);
 	printf("Successful terminations: %d\n", regTerms);
 	printf("Deadlock detections: %d\n", dlRuns);
 	printf("Processes killed by deadlock recovery: %d\n", dlKills);
-	printf("Percentage of deadlocked processes that were killed: %d%%\n", (int)dlPerc);
+	printf("Percentage of deadlocked processes that were killed: %.1f%%\n", dlPerc);
 
+	// Print final statistics to logfile if necessary
 	if (logging)
 	{
 		fprintf(logfile, "\n----Final Statistics----\n");
@@ -859,7 +1044,7 @@ int main(int argc, char* argv[])
 		fprintf(logfile, "Successful terminations: %d\n", regTerms);
 		fprintf(logfile, "Deadlock detections: %d\n", dlRuns);
 		fprintf(logfile, "Processes killed by deadlock recovery: %d\n", dlKills);
-		fprintf(logfile, "Percentage of deadlocked processes that were killed: %d%%\n", (int)dlPerc);
+		fprintf(logfile, "Percentage of deadlocked processes that were killed: %.1f%%\n", dlPerc);
 	}
 
 	// Detach from shared memory and remove it

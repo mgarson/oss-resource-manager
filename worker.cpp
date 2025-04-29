@@ -1,11 +1,12 @@
-// Operating Systems Project 4
+// Operating Systems Project 5
 // Author: Maija Garson
-// Date: 04/18/2025
-// Description: Worker process launched by oss. Uses the clock in shared memory and loops until receiving a message from the parent containing its time
-// quantum. Once it receives the quantum, it generates a random number between 0-99 that will determine if it will either terminate (0-19), block
-// from I/O (20-49) or run its full time quantum (50-99). It will then compute the simulated time that it used and send a message back to the
-// parent containing the amount of time it used along with a status flag: 0 means terminate, -1 means it is blocked, and 1 means it ran its full time 
-// quantum given. Once it decides to terminate, it will leave the loop and terminate.
+// Date: 04/29/2025
+// Description: Worker process launched by oss. Uses the clock in shared memory and loops continuously. Within the loop, it will randomly generate a time to
+// act within BOUND_NS (1000). Once it acts, it will randomly generate a probability to determine if it should request a new resource or release resources
+// being held. It sends a message to oss informing if it is a request or release, along with the resource id. It will then wait for a response from oss and will
+// update its values if the message was granted. Each time it sends/receives a message it will increment the system clock. It will also continuously check every
+// 250000000 ns if it has run for 1 sec. If it has run for that time, it will randomly generate a probability to determine if it should terminate or continue looping.
+// Once it terminates, it will release all held resources, detaches from shared memory, and exit.
 
 #include <string.h>
 #include <stdio.h>
@@ -21,20 +22,22 @@
 #define PERMS 0644
 #define MAX_RES 5
 #define INST_PER_RES 10
-#define BOUND_NS 100
+#define BOUND_NS 1000
 #define TERM_CHECK_NS 250000000
 #define LIFE_NS 2000000000
 #define TERM_PROB 40
 
+// Message buffer structure
 typedef struct msgbuffer
 {
-	long mtype;
-	pid_t pid;
+	long mtype; 
+	pid_t pid; 
 	int resId;
 	bool isRelease;
 	bool granted;
 } msgbuffer;
 
+// Shared memory pointers for system clock
 int *shm_ptr;
 int shm_id;
 
@@ -65,10 +68,12 @@ void shareMem()
 	}
 }
 
+// Function to increment time by 1000 ns 
 void addTime()
 {
 	shm_ptr[1] += 1000;
-	if (shm_ptr[1] > 1000000000)
+	// Ensure ns did not overflow 
+	if (shm_ptr[1] > 1000000000) 
 	{
 		shm_ptr[1] -= 1000000000;
 		shm_ptr[0]++;
@@ -100,27 +105,35 @@ int main(int argc, char* argv[])
 		exit(1);
 	}
 
+	// Represents how many of each resource worker holds
 	int held[MAX_RES] = {0};
 
+	// Represents time process started in ns
 	long long startTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
 	long long lastTermChk = startTimeNs;
 
+	// Randomly generate a number within bound ns to determine when worker will act 
 	srand(getpid());
 	long long nAct = startTimeNs + (rand() % BOUND_NS);
 
-	// Loop that loop suntil determined end time is reached
 	while(true)
 	{
+		// Calculate current system time in ns
 		long long currTimeNs = (long long)shm_ptr[0] * 1000000000 + shm_ptr[1];
 
+		// Determine if worker should terminate every time it reaches term check (25000000 ns)
 		if (currTimeNs - lastTermChk >= TERM_CHECK_NS)
 		{
 			lastTermChk = currTimeNs;
+			// Once lifetime (1 sec)  is reached, worker will determine if it should terminate
 			if (currTimeNs - startTimeNs >= LIFE_NS)
 			{
+				// Randomly generate number up to 100 to determine if worker will terminate
 				int die = rand() % 100;
+				// If randomly generated number is less than term probability (40), it will terminate
 				if (die < TERM_PROB)
 				{
+					// Release all resources currently held 
 					for (int i = 0; i < MAX_RES; i++)
 					{
 						while (held[i] > 0)
@@ -130,26 +143,31 @@ int main(int argc, char* argv[])
 							buf.resId = i;
 							buf.isRelease = true;
 
+							// Send message to OSS informing of release
 							if (msgsnd(msqid, &buf, sizeof(buf) - sizeof(long), 0) == -1)
 							{
 								perror("msgsnd release");
 								exit(1);
 							}
+							// Increment time for message sending
 							addTime();
 							
+							// Wait for OSS to acknowledge realease
 							if (msgrcv(msqid, &rcvbuf, sizeof(rcvbuf) - sizeof(long), getpid(), 0) == -1)
 							{
 								perror("msgrcv release ack");
 								exit(1);
 							}
+							// Increment time for message receivingg
 							addTime();
 
-							//DOUBLE CHECK THAT TIME WAS ADDED AT CORRECT SPOTS
 						
 						}
 					}
 
+					// Detach from shared memory and exit
 					if (shmdt(shm_ptr) == -1)
+
 					{
 						perror("shmdt failed");
 						exit(1);
@@ -159,18 +177,23 @@ int main(int argc, char* argv[])
 			}
 		}
 
+		// Determine if current time has reached time for worker to act
 		if (currTimeNs >= nAct)
 		{
+			// Randomly generate number up to 100 to determine if worker will request or release
 			int outcome = rand() % 100;
 			bool release;
+			// If outcome is greater than 5, worker will request. Otherwise worker will release
 			if (outcome > 5)
 				release = false;
 			else
 				release = true;
 
+
 			int r;
-			if (release)
+			if (release) // Worker is releasing
 			{
+				// Randomly choose a resource to release
 				int tries = 0;
 				while (tries < MAX_RES)
 				{
@@ -179,14 +202,16 @@ int main(int argc, char* argv[])
 						break;
 					tries++;
 				}
+				// Once max resource amount is reached, randomly generate time for next act and continue
 				if (tries == MAX_RES)
 				{
 					nAct = currTimeNs + (rand() % BOUND_NS);
 					continue;
 				}
 			}
-			else // Request
+			else // Worker is requestin
 			{
+				// Randomly choose a resource to request
 				int tries = 0;
 				while (tries < MAX_RES)
 				{
@@ -195,6 +220,7 @@ int main(int argc, char* argv[])
 						break;
 					tries++;
 				}
+				// Once max resource amount is reached, randomly generate time for next act and continue
 				if (tries == MAX_RES)
 				{
 					nAct = currTimeNs + (rand() % BOUND_NS);
@@ -203,26 +229,30 @@ int main(int argc, char* argv[])
 			}
 		
 
+			// Prepare info to send message to OSS, informing if it is a release or request and what resource is selected
 			buf.mtype = 1;
 			buf.pid = getpid();
 			buf.resId = r;
 			buf.isRelease = release;
-			buf.granted = false;
+			buf.granted = false; 
+			// Send request/release message to OSS
 			if (msgsnd(msqid, &buf, sizeof(buf) - sizeof(long), 0) == -1)
 			{
 				perror("msgsnd request");
 				exit(1);
 			}
 
+			// Increment time for message sending
 			addTime();
 		
-			// Wait until Oss sends a message back
+			// Wait until OSS sends a message back
 			if (msgrcv(msqid, &rcvbuf, sizeof(rcvbuf) - sizeof(long), getpid(), 0) == -1)
 			{
 				perror("msgrcv grant");
 				exit(1);
 			}
 
+			// Increment time for message receiving
 			addTime();
 
 			if (rcvbuf.granted) // If new resource was received
@@ -234,19 +264,11 @@ int main(int argc, char* argv[])
 					held[r]++;
 			}
 
+			// Randomly generate time for next act
 			nAct = currTimeNs + (rand() % BOUND_NS);
 		}
 	}
 
-
-
-	
-	// Detach from memory
-	if (shmdt(shm_ptr) == -1)
-	{
-		perror("memory detach failed in worker\n");
-		exit(1);
-	}
 
 	return 0;
 }
