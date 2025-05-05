@@ -6,6 +6,7 @@
 ---
 
 ## Overview
+
 This project consists of two programs--'oss' (the master scheduler) and 'worker' (the child process)--that work together to simulate resource allocation, process blocking, and deadlock recovery.
 
 ---
