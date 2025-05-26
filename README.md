@@ -14,7 +14,7 @@ This project consists of two programs--'oss' (the master scheduler) and 'worker'
 ## Features
 
 - **Process forking**
-  'oss' forks each 'worker' as a child process.
+  `oss` forks each `worker` as a child process.
 - **Shared-clock**
   Uses shared memory for a simulated system clock
 - **Resource & PCB tables**
